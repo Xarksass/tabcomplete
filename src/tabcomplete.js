@@ -1,276 +1,395 @@
 /*!
- * tabcomplete
- * http://github.com/erming/tabcomplete
- * v1.5.3
+ * native tabcomplete
+ * based on http://github.com/erming/tabcomplete
+ * v1.0.0
  */
-(function($) {
-	var keys = {
-		backspace: 8,
-		tab: 9,
-		up: 38,
-		down: 40
-	};
-
-	$.tabcomplete = {};
-	$.tabcomplete.defaultOptions = {
-		after: "",
-		arrowKeys: false,    // Allow the use of <up> and <down> keys to iterate
-		hint: "placeholder", // "placeholder", "select", false
-		match: match,
-		caseSensitive: false,
-		minLength: 1,
-		wrapInput: true
-	};
-
-	$.fn.tab = // Alias
-	$.fn.tabcomplete = function(args, options) {
-		if (this.length > 1) {
-			return this.each(function() {
-				$(this).tabcomplete(args, options);
-			});
-		}
-
-		// Only enable the plugin on <input> and <textarea> elements.
-		var tag = this.prop("tagName");
-		if (tag != "INPUT" && tag != "TEXTAREA") {
-			return;
-		}
-
-		// Set default options.
-		this.options = options = $.extend(
-			$.tabcomplete.defaultOptions,
-			options
-		);
-
-		// Remove any leftovers.
-		// This allows us to override the plugin if necessary.
-		this.unbind(".tabcomplete");
-		this.prev(".hint").remove();
-
-		var self = this;
-		var backspace = false;
-		var i = -1;
-		var words = [];
-		var last = "";
-
-		var hint = $.noop;
-
-		// Determine what type of hinting to use.
-		switch (options.hint) {
-		case "placeholder":
-			hint = placeholder;
-			break;
-
-		case "select":
-			hint = select;
-			break;
-		}
-
-		this.on("input.tabcomplete", function() {
-			var input = self.val();
-			var word = input.split(/ |\n/).pop();
-
-			// Reset iteration.
-			reset();
-
-			// Check for matches if the current word is the last word.
-			if (self[0].selectionStart == input.length
-				&& word.length) {
-				// Call the match() function to filter the words.
-				words = options.match(word, args, options.caseSensitive);
-
-				// Append 'after' to each word.
-				if (options.after) {
-					words = $.map(words, function(w) { return w + options.after; });
-				}
-			}
-
-			// Emit the number of matching words with the 'match' event.
-			self.trigger("match", words.length);
-
-			if (options.hint) {
-				if (!(options.hint == "select" && backspace) && word.length >= options.minLength) {
-					// Show hint.
-					hint.call(self, words[0]);
+'use strict';
+/**
+ * Tabcomplete for tabcomplete.js v1.0.0
+ */
+class Tabcomplete {
+	/**
+	 * Constructor
+	 * @param {HTMLInputElement} element
+	 * @param {Array} keywords
+	 * @param {Object} options
+	 */
+	constructor(element, keywords, options) {
+		this.version = '1.0.0';
+		this.utils = {
+			keys: {
+				backspace: 8,
+				tab: 9,
+				enter: 13,
+				left: 37,
+				up: 38,
+				right: 39,
+				down: 40
+			},
+			eventFire: function(el, etype, data) {
+				if(typeof data !== "undefined") el.eventData = data;
+				if (el.fireEvent) {
+					el.fireEvent('on' + etype);
 				} else {
-					// Clear hinting.
-					// This call is needed when using backspace.
-					hint.call(self, "");
+					var evObj = document.createEvent('Events');
+					evObj.initEvent(etype, true, false);
+					el.dispatchEvent(evObj);
 				}
+			},
+			isInput: function(o){
+				return (
+					typeof HTMLInputElement === "object" ? o instanceof HTMLInputElement : //DOM2
+						o && typeof o === "object" && o !== null && o.nodeType === 1 && typeof o.nodeName==="string"
+				);
 			}
+		};
+		this.elem = element;
+		this.keywords = keywords;
+		this.defaultOptions = {
+			after: "",
+			arrowKeys: true,    // Allow the use of <up> and <down> keys to iterate
+			hint: "placeholder", // "placeholder", "select", false
+			match: this.match,
+			caseSensitive: false,
+			minLength: 1,
+			wrapInput: true,
+			complete: 'tab' // key to choose and switch between proposition, either tab, enter or right
+		};
+		this.options = Object.assign({}, this.defaultOptions, options);
+		this.elem.tabcomplete = this;
+		this.iteration = {
+			backspace: false,
+			complete: false,
+			i: -1,
+			words: [],
+			last: "",
+		};
+		this.init();
+	}
 
-			if (backspace) {
-				backspace = false;
+	/**
+	 * Override options
+	 * @param options
+	 */
+	set(options) {
+		let TC = this;
+		TC.options = Object.assign({}, TC.options, options);
+		TC.reset();
+	}
+
+	/**
+	 * Initialise event handlers
+	 */
+	init() {
+		let TC = this;
+		let tag = TC.elem.tagName;
+		if (tag !== "INPUT" && tag !== "TEXTAREA") return;
+		let prev = TC.elem.previousSibling;
+		if(TC.utils.isInput(prev) && prev.classList.contains("hint")) prev.remove();
+
+		TC.elem.addEventListener('input',TC.onInput);
+		TC.elem.addEventListener("keydown",TC.onKeydown);
+		TC.elem.addEventListener("blur",TC.onBlur);
+
+		if (TC.options.hint) TC.hint("");
+	}
+
+	/**
+	 * Reset event Tabcomplete
+	 */
+	reset() {
+		let TC = this;
+		TC.elem.removeEventListener('input',TC.onInput);
+		TC.elem.removeEventListener("keydown",TC.onKeydown);
+		TC.elem.removeEventListener("blur",TC.onBlur);
+		TC.init();
+	}
+
+	/**
+	 * Reset iteration
+	 */
+	resetIteration() {
+		this.iteration.i = -1;
+		this.iteration.last = "";
+		this.iteration.words = [];
+	}
+
+	/**
+	 * On input handler
+	 * @param e
+	 */
+	onInput(e) {
+		let TC = this.tabcomplete,
+			val = TC.elem.value,
+			word = val.split(/ |\n/).pop();
+
+		if(TC === undefined) return;
+
+		// Reset iteration.
+		TC.resetIteration();
+
+		// Check for matches if the current word is the last word.
+		if (TC.elem.selectionStart === val.length && word.length) {
+			// Call the match() function to filter the words.
+			TC.iteration.words = TC.options.match(word, TC.keywords, TC.options.caseSensitive);
+
+			// Append 'after' to each word.
+			if (TC.options.after !== "") TC.iteration.words = TC.iteration.words.map(function (w){ return w + TC.options.after; });
+		}
+
+		// Emit the number of matching words with the 'match' event.
+		TC.utils.eventFire(TC.elem,'match',TC.iteration.words.length);
+
+		if (TC.options.hint === 'select' || TC.options.hint === 'placeholder') {
+			if (
+				!(TC.options.hint === "select" && TC.iteration.backspace)
+				&& word.length >= TC.options.minLength) {
+				// Show hint.
+				TC.hint(TC.iteration.words[0]);
 			}
-		});
-
-		this.on("keydown.tabcomplete", function(e) {
-			var key = e.which;
-
-			// Ignore modifier keys
-			if (e.ctrlKey || e.shiftKey || e.altKey) {
-				return;
+			else {
+				// Clear hinting.
+				// This call is needed when using backspace.
+				TC.hint("");
 			}
+		}
 
-			if (key == keys.tab && !e.ctrlKey || (options.arrowKeys && (key == keys.up || key == keys.down))) {
+		if (TC.iteration.backspace) TC.iteration.backspace = false;
+	}
+
+	/**
+	 * On keydown handler
+	 * @param e
+	 */
+	onKeydown(e) {
+		let TC = this.tabcomplete,
+			key = e.which;
+
+		if(TC === undefined) return;
+
+		// Ignore modifier keys
+		if (e.ctrlKey || e.shiftKey || e.altKey) return;
+
+		if(!TC.iteration.complete) TC.elem.typed = TC.elem.value;
+
+		switch (key) {
+			case TC.utils.keys[TC.options.complete]:
 				// Don't lose focus on tab click.
+				// Don't submit on enter click
 				e.preventDefault();
 
-				// Iterate the matches with tab and the up and down keys by incrementing
-				// or decrementing the 'i' variable.
-				if (key != keys.up) {
-					i++;
-				} else {
-					if (i == -1) return;
-					if (i == 0) {
-						// Jump to the last word.
-						i = words.length - 1;
-					} else {
-						i--;
-					}
-				}
-
 				// Get next match.
-				var word = words[i % words.length];
-				if (!word) {
-					return;
-				}
+				let word = TC.iteration.i < 0 ? TC.iteration.words[0] : TC.iteration.words[TC.iteration.i % TC.iteration.words.length];
+				if (!word) return;
 
-				var value = self.val();
-				last = last || value.split(/ |\n/).pop();
+				let value = TC.elem.value;
+				TC.iteration.last = TC.iteration.last || value.split(/ |\n/).pop();
 
 				// Return if the 'minLength' requirement isn't met.
-				if (last.length < options.minLength) {
-					return;
-				}
+				if (TC.iteration.last.length < TC.options.minLength || value.length === word.length) return;
 
 				// Update element with the completed text.
-				var text = options.hint == "select" ? value : value.substr(0, self[0].selectionStart - last.length) + word;
-				self.val(text);
+				let text = TC.options.hint === "select" ? value : value.substr(0, TC.elem.selectionStart - TC.iteration.last.length) + word;
+				TC.elem.value = text;
 
 				// Put the cursor at the end after completion.
 				// This isn't strictly necessary, but solves an issue with
 				// Internet Explorer.
-				if (options.hint == "select") {
-					self[0].selectionStart = text.length;
-				}
+				if (TC.options.hint === "select") TC.elem.selectionStart = text.length;
 
 				// Remember the word until next time.
-				last = word;
+				TC.iteration.last = word;
 
 				// Emit event.
-				self.trigger("tabcomplete", last);
+				//TC.trigger("tabcomplete", last);
+				TC.utils.eventFire(TC.elem,"tabcomplete",TC.iteration.last);
 
-				if (options.hint) {
+				if (TC.options.hint) {
 					// Turn off any additional hinting.
-					hint.call(self, "");
+					TC.hint("");
 				}
-			} else if (e.which == keys.backspace) {
-				// Remember that backspace was pressed. This is used
-				// by the 'input' event.
-				backspace = true;
+
+				TC.iteration.complete = true;
+				break;
+			case TC.utils.keys.up:
+			case TC.utils.keys.down:
+				if(TC.options.arrowKeys) {
+					// Iterate the matches with tab and the up and down keys by incrementing
+					// or decrementing the 'i' variable.
+					if (key !== TC.utils.keys.up) {
+						TC.iteration.i++;
+					}
+					else {
+						if (TC.iteration.i === -1) return;
+						if (TC.iteration.i === 0) {
+							// Jump to the last word.
+							TC.iteration.i = TC.iteration.words.length - 1;
+						} else {
+							TC.iteration.i--;
+						}
+					}
+
+					// Get next match.
+					let word = TC.iteration.words[TC.iteration.i % TC.iteration.words.length];
+					if (!word) return;
+
+					let value = TC.elem.value;
+					TC.iteration.last = TC.iteration.last || value.split(/ |\n/).pop();
+
+					// Return if the 'minLength' requirement isn't met.
+					if (TC.iteration.last.length < TC.options.minLength) return;
+
+					// Remember the word until next time.
+					TC.iteration.last = word;
+
+					if (TC.options.hint) {
+						// Switch hint
+						TC.hint(word);
+					}
+					else {
+						// Update element with the completed text.
+						let text = TC.options.hint === "select" ? value : value.substr(0, TC.elem.selectionStart - TC.iteration.last.length) + word;
+						TC.elem.value = text;
+
+						// Put the cursor at the end after completion.
+						// This isn't strictly necessary, but solves an issue with
+						// Internet Explorer.
+						if (TC.options.hint === "select") TC.elem.selectionStart = text.length;
+						// Emit event.
+						//TC.trigger("tabcomplete", last);
+						TC.utils.eventFire(TC.elem,"tabcomplete",TC.iteration.last);
+					}
+				}
+				break;
+			case TC.utils.keys.backspace:
+				// Remember that backspace|left was pressed. This is used by the 'input' event.
+				if(TC.elem.value !== TC.elem.typed) TC.iteration.complete = false;
+				TC.iteration.backspace = true;
 
 				// Reset iteration.
-				i = -1;
-				last = "";
-			} else if (options.hint) {
-				reset();
-				hint.call(self, "");
-			}
-		});
-
-		if (options.hint) {
-			// If enabled, turn on hinting.
-			hint.call(this, "");
+				TC.resetIteration();
+				if (TC.options.hint) TC.hint("");
+				break;
+			case TC.utils.keys.left:
+				if(TC.elem.typed !== undefined) {
+					e.preventDefault();
+					TC.elem.value = TC.elem.typed;
+					TC.iteration.complete = false;
+				}
+				break;
+			default:
+				if(TC.elem.value !== TC.elem.typed) TC.iteration.complete = false;
+				if (TC.options.hint) {
+					TC.resetIteration();
+					TC.hint("");
+				}
 		}
-
-		this.on("blur.tabcomplete", function() {
-			reset();
-			if (options.hint) {
-				hint.call(self, "");
-			}
-		});
-
-		function reset() {
-			i = -1;
-			last = "";
-			words = [];
-		}
-
-		return this;
 	}
 
-	// Simple matching.
-	// Filter the array and return the items that begins with 'word'.
-	function match(word, array, caseSensitive) {
-		return $.grep(
-			array,
+	/**
+	 * On blur event
+	 * @param e
+	 */
+	onBlur(e) {
+		let TC = this.tabcomplete;
+		if(TC === undefined) return;
+		TC.resetIteration();
+		if (TC.options.hint) TC.hint("");
+	}
+
+	/**
+	 * Display hint
+	 * @param word
+	 */
+	hint(word) {
+		let TC = this;
+		switch (TC.options.hint) {
+			case "placeholder":
+				TC.placeholder(word);
+				break;
+			case "select":
+				TC.select(word);
+				break;
+		}
+	}
+
+	/**
+	 * Simple matching.
+	 * Filter the array and return the items that begins with 'word'.
+	 * @param word
+	 * @param array
+	 * @param caseSensitive
+	 * @returns {*}
+	 */
+	match(word, array, caseSensitive) {
+		return array.filter(
 			function(w) {
-				if (caseSensitive) {
-					return !w.indexOf(word);
-				} else {
-					return !w.toLowerCase().indexOf(word.toLowerCase());
-				}
+				return caseSensitive ? !w.indexOf(word) : !w.toLowerCase().indexOf(word.toLowerCase());
 			}
 		);
 	}
 
-	// Show placeholder text.
-	// This works by creating a copy of the input and placing it behind
-	// the real input.
-	function placeholder(word) {
-		var input = this;
-		var clone = input.prev(".hint");
+	/**
+	 * Show placeholder text.
+	 * This works by creating a copy of the input and placing it behind
+	 * the real input.
+	 * @param word
+	 */
+	placeholder(word) {
+		let TC = this,
+			input = TC.elem,
+			prev = input.previousSibling;
+		let clone = (TC.utils.isInput(prev) && prev.classList.contains("hint")) ? prev : false;
 
-		input.css({
-			backgroundColor: "transparent",
-			position: "relative",
-		});
+		input.style.backgroundColor = "transparent";
+		input.style.position = "relative";
 
 		// Lets create a clone of the input if it does
 		// not already exist.
-		if (!clone.length) {
-			if (input.options.wrapInput) {
-				input.wrap(
-					$("<div>").css({
-						position: "relative",
-						height: input.css("height"),
-						display: input.css("display") === "block" ? "block" : "inline-block"
-					})
-				);
+		if (clone === false) {
+			if (TC.options.wrapInput) {
+				let next = input.nextSibling;
+				let parent = input.parentElement;
+				let wrapper = document.createElement('div');
+				wrapper.style.position = "relative";
+				wrapper.style.height = input.style.height;
+				wrapper.style.display = input.style.display === "block" ? "block" : "inline-block";
+				parent.insertBefore(wrapper,next);
+				wrapper = input.nextSibling;
+				wrapper.insertBefore(input,null);
+				//input = parent.querySelector('input');
 			}
-			clone = input
-				.clone()
-				.attr("tabindex", -1)
-				.removeAttr("id name placeholder")
-				.addClass("hint")
-				.insertBefore(input);
-			clone.css({
-				position: "absolute",
-			});
+
+			clone = input.cloneNode(true);
+			clone.setAttribute('tabindex',-1);
+			clone.removeAttribute('id');
+			clone.removeAttribute('name');
+			clone.removeAttribute('placeholder');
+			clone.classList.add('hint');
+			input.parentElement.insertBefore(clone,input);
+			clone.style.position = "absolute";
 		}
 
-		var hint = "";
-		if (typeof word !== "undefined") {
-			var value = input.val();
+		let hint = "";
+		if (typeof word === "string") {
+			let value = input.value;
 			hint = value + word.substr(value.split(/ |\n/).pop().length);
 		}
 
-		clone.val(hint);
+		clone.value = hint;
 	}
 
-	// Hint by selecting part of the suggested word.
-	function select(word) {
-		var input = this;
-		var value = input.val();
+	/**
+	 * Hint by selecting part of the suggested word.
+	 * @param word
+	 */
+	select(word) {
+		let input = this.elem;
+		let value = input.value;
 		if (word) {
-			input.val(
-				value
-				+ word.substr(value.split(/ |\n/).pop().length)
-			);
-
+			input.value = value + word.substr(value.split(/ |\n/).pop().length);
 			// Select hint.
-			input[0].selectionStart = value.length;
+			input.selectionStart = value.length;
 		}
 	}
-})(jQuery);
+}

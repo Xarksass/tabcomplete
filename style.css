@@ -76,16 +76,19 @@ h3 {
 	text-transform: uppercase;
 	transition: all .3s;
 }
-#options label {
+#autocomplete label,
+#hint label {
 	display: inline-block;
 	margin: 0 20px;
 }
-#options input {
+#autocomplete input,
+#hint input {
 	margin: 0 auto;
 	margin-bottom: 15px;
 	width: 15px;
 }
-#options .options {
+#autocomplete .options,
+#hint .options {
 	padding-top: 10px;
 	text-align: center;
 }
